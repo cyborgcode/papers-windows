@@ -37,6 +37,10 @@ WIN32_HELPERS = r'''#include "pps-file-helpers.h"
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
 #endif
+/* Temporary files hold binary data (media, images, document copies) */
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
 
 #ifdef G_OS_WIN32
 /* Windows has no shared-mime-info database: GIO content types there are
@@ -416,6 +420,19 @@ return TRUE;""",
 #ifdef G_OS_WIN32
     pps_metadata_win32_save (metadata);
     return TRUE;
+#endif"""),
+
+    ("libdocument/pps-file-helpers.c",
+     "fd = g_mkstemp_full (name, O_RDWR | O_CLOEXEC, 0600);",
+     "fd = g_mkstemp_full (name, O_RDWR | O_CLOEXEC | O_BINARY, 0600);"),
+    # ---- PDF backend: write()/close() come from <io.h> on Windows
+    ("libdocument/backend/pdf/pps-poppler.c",
+     "#include <string.h>",
+     """#include <string.h>
+#ifdef G_OS_WIN32
+#include <io.h>
+#else
+#include <unistd.h>
 #endif"""),
 
     # ---- libdocument/pps-document.c: no fcntl() on Windows
