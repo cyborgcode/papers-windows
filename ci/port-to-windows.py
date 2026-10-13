@@ -463,12 +463,17 @@ return TRUE;""",
 if (g_content_type_is_mime_type (content_type, mime_types[i]))
 return info;""",
      """for (i = 0; mime_types[i] != NULL; ++i) {
-            /* Content types are not MIME types on Windows */
+#ifdef G_OS_WIN32
+            /* Windows content types are file extensions, and every MIME type
+             * missing from the registry maps to the wildcard type "*", which
+             * would match any backend. Our MIME sniffer returns the exact
+             * strings the backends declare. */
             if (g_ascii_strcasecmp (mime_type, mime_types[i]) == 0)
                 return info;
-            if (content_type != NULL &&
-                g_content_type_is_mime_type (content_type, mime_types[i]))
+#else
+            if (g_content_type_is_mime_type (content_type, mime_types[i]))
                 return info;
+#endif
         }"""),
     ("libdocument/pps-document-factory.c",
      """if (!pps_backends_dir) {
