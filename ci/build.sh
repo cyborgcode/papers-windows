@@ -106,7 +106,8 @@ fi
 echo "::endgroup::"
 
 echo "::group::Compile"
-meson compile -C build
+# Keep going after failures so one CI run reports as many errors as possible
+ninja -C build -k 0
 echo "::endgroup::"
 
 echo "::group::Install"

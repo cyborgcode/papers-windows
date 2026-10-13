@@ -231,6 +231,62 @@ fcntl (fd, F_SETFD, flags);
     }
 #endif"""),
 
+    # ---- PDF backend: poppler_document_new_from_fd() is Unix-only. Papers
+    # opens documents by URI; loading from a descriptor stays unsupported.
+    ("libdocument/backend/pdf/pps-poppler.c",
+     """static gboolean
+pdf_document_load_fd (PpsDocument *document,""",
+     """#ifndef G_OS_WIN32
+static gboolean
+pdf_document_load_fd (PpsDocument *document,"""),
+    ("libdocument/backend/pdf/pps-poppler.c",
+     """g_rw_lock_writer_unlock (&self->rwlock);
+
+return success;
+}
+
+static int
+pdf_document_get_n_pages (PpsDocument *document)""",
+     """g_rw_lock_writer_unlock (&self->rwlock);
+
+    return success;
+}
+#endif /* !G_OS_WIN32 */
+
+static int
+pdf_document_get_n_pages (PpsDocument *document)"""),
+    ("libdocument/backend/pdf/pps-poppler.c",
+     "pps_document_class->load_fd = pdf_document_load_fd;",
+     """#ifndef G_OS_WIN32
+    pps_document_class->load_fd = pdf_document_load_fd;
+#endif"""),
+
+    # ---- TIFF and comics backends: GLib file names are UTF-8 on Windows, the
+    # narrow-character open functions expect the ANSI code page.
+    ("libdocument/backend/tiff/tiff-document.c",
+     """tiff = TIFFOpen (filename, "r");""",
+     """#ifdef G_OS_WIN32
+    {
+        g_autofree gunichar2 *wide_filename = g_utf8_to_utf16 (filename, -1, NULL, NULL, NULL);
+
+        tiff = wide_filename ? TIFFOpenW ((const wchar_t *) wide_filename, "r") : NULL;
+    }
+#else
+    tiff = TIFFOpen (filename, "r");
+#endif"""),
+    ("libdocument/backend/comics/pps-archive.c",
+     "r = archive_read_open_filename (archive->libar, path, BUFFER_SIZE);",
+     """#ifdef G_OS_WIN32
+    {
+        g_autofree gunichar2 *wide_path = g_utf8_to_utf16 (path, -1, NULL, NULL, NULL);
+
+        r = wide_path ? archive_read_open_filename_w (archive->libar, (const wchar_t *) wide_path, BUFFER_SIZE)
+                      : ARCHIVE_FATAL;
+    }
+#else
+    r = archive_read_open_filename (archive->libar, path, BUFFER_SIZE);
+#endif"""),
+
     # ---- libdocument/pps-document.c: no fcntl() on Windows
     ("libdocument/pps-document.c",
      """if (fstat (fd, &statbuf) == -1 ||
