@@ -61,6 +61,42 @@ foreach ($case in $cases) {
     Start-Sleep -Seconds 2
 }
 
+# Feature tour on the PDF sample, driven by Papers' own keyboard shortcuts
+$tourDoc = Join-Path $Samples 'sample.pdf'
+if (Test-Path $tourDoc) {
+    $proc = Start-Process -FilePath $exe -ArgumentList "`"$tourDoc`"" -PassThru `
+        -RedirectStandardError (Join-Path $OutDir 'tour.stderr.txt') -RedirectStandardOutput (Join-Path $OutDir 'tour.stdout.txt')
+    Start-Sleep -Seconds $WaitSeconds
+    $shell = New-Object -ComObject WScript.Shell
+    $steps = @(
+        @{ Name = 'find'; Keys = @('^f', 'page'); Undo = @('{ESC}') },
+        @{ Name = 'properties'; Keys = @('%{ENTER}'); Undo = @('{ESC}') },
+        @{ Name = 'night-mode'; Keys = @('^i'); Undo = @('^i') },
+        @{ Name = 'dual-page'; Keys = @('d'); Undo = @('d') },
+        @{ Name = 'zoom-in'; Keys = @('^{ADD}', '^{ADD}'); Undo = @('a') },
+        @{ Name = 'rotate'; Keys = @('^{RIGHT}'); Undo = @('^{LEFT}') },
+        @{ Name = 'shortcuts'; Keys = @('^?'); Undo = @('{ESC}') },
+        @{ Name = 'presentation'; Keys = @('{F5}'); Undo = @('{ESC}') },
+        @{ Name = 'print-dialog'; Keys = @('^p'); Undo = @('{ESC}') }
+    )
+    $i = 0
+    foreach ($step in $steps) {
+        $i++
+        if ($proc.HasExited) { $summary += "tour: papers exited before step $($step.Name)"; $failures += 'tour'; break }
+        [void]$shell.AppActivate($proc.Id)
+        Start-Sleep -Milliseconds 500
+        foreach ($k in $step.Keys) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 400 }
+        Start-Sleep -Seconds 3
+        Save-Screenshot (Join-Path $OutDir ("tour-{0:D2}-{1}.png" -f $i, $step.Name))
+        foreach ($k in $step.Undo) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 400 }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $proc.HasExited) {
+        $summary += "tour: completed $i steps, papers still running"
+        Stop-Process -Id $proc.Id -Force
+    }
+}
+
 $summary | Tee-Object -FilePath (Join-Path $OutDir 'summary.txt')
 if ($failures.Count -gt 0) {
     Write-Error "Smoke test failed for: $($failures -join ', ')"
