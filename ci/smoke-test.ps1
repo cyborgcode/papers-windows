@@ -1,0 +1,67 @@
+# Launch the bundled papers.exe on each sample document, check that it keeps
+# running, and capture a screenshot plus its stderr for the CI log branch.
+param(
+    [Parameter(Mandatory = $true)][string]$Bundle,
+    [Parameter(Mandatory = $true)][string]$Samples,
+    [Parameter(Mandatory = $true)][string]$OutDir,
+    [int]$WaitSeconds = 15
+)
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+function Save-Screenshot([string]$Path) {
+    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+    $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $g.Dispose(); $bmp.Dispose()
+}
+
+$exe = Join-Path $Bundle 'bin\papers.exe'
+$cases = @(
+    @{ Name = 'start-screen'; File = $null },
+    @{ Name = 'pdf'; File = 'sample.pdf' },
+    @{ Name = 'djvu'; File = 'sample.djvu' },
+    @{ Name = 'tiff'; File = 'sample.tiff' },
+    @{ Name = 'cbz'; File = 'sample.cbz' },
+    @{ Name = 'cbt'; File = 'sample.cbt' },
+    @{ Name = 'cb7'; File = 'sample.cb7' }
+)
+
+$failures = @()
+$summary = @()
+foreach ($case in $cases) {
+    $name = $case.Name
+    $stderr = Join-Path $OutDir "$name.stderr.txt"
+    $stdout = Join-Path $OutDir "$name.stdout.txt"
+    $docArgs = @()
+    if ($case.File) {
+        $doc = Join-Path $Samples $case.File
+        if (-not (Test-Path $doc)) { $summary += "$name : SKIPPED (no sample)"; continue }
+        $docArgs += "`"$doc`""
+    }
+    $env:G_MESSAGES_DEBUG = ''
+    $startArgs = @{ FilePath = $exe; PassThru = $true; RedirectStandardError = $stderr; RedirectStandardOutput = $stdout }
+    if ($docArgs.Count -gt 0) { $startArgs.ArgumentList = $docArgs }
+    $proc = Start-Process @startArgs
+    Start-Sleep -Seconds $WaitSeconds
+    Save-Screenshot (Join-Path $OutDir "$name.png")
+    if ($proc.HasExited) {
+        $code = '0x{0:X8}' -f $proc.ExitCode
+        $failures += $name
+        $summary += "$name : EXITED early with code $code"
+    } else {
+        $title = (Get-Process -Id $proc.Id).MainWindowTitle
+        $summary += "$name : running, window title '$title'"
+        Stop-Process -Id $proc.Id -Force
+    }
+    Start-Sleep -Seconds 2
+}
+
+$summary | Tee-Object -FilePath (Join-Path $OutDir 'summary.txt')
+if ($failures.Count -gt 0) {
+    Write-Error "Smoke test failed for: $($failures -join ', ')"
+}

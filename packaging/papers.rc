@@ -1,0 +1,31 @@
+// Windows resources for papers.exe: application icon and version information.
+#include <winver.h>
+#include "papers-version.h"
+
+1 ICON "papers.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION PAPERS_VERSION_MAJOR, PAPERS_VERSION_MINOR, 0, 0
+PRODUCTVERSION PAPERS_VERSION_MAJOR, PAPERS_VERSION_MINOR, 0, 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "The GNOME Project"
+      VALUE "FileDescription", "Document Viewer"
+      VALUE "FileVersion", PAPERS_VERSION_STRING
+      VALUE "InternalName", "papers"
+      VALUE "LegalCopyright", "GPL-2.0-or-later"
+      VALUE "OriginalFilename", "papers.exe"
+      VALUE "ProductName", "Papers"
+      VALUE "ProductVersion", PAPERS_VERSION_STRING
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
