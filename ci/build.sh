@@ -50,8 +50,8 @@ sed "s|@PREFIX@|$(winpath "$SHIM")|" "$ROOT/exempi-shim/exempi-2.0.pc.in" > "$SH
 gcc -std=c11 -O2 -Wall $XML_CFLAGS -I"$ROOT/exempi-shim" "$ROOT/exempi-shim/test-xmp.c" \
 	"$SHIM/lib/libexempi.a" $XML_LIBS -o "$SHIM/obj/test-xmp.exe"
 "$SHIM/obj/test-xmp.exe"
-# pkgconf here is a native Windows program: use a Windows path
-export PKG_CONFIG_PATH="$(winpath "$SHIM/lib/pkgconfig")"
+# POSIX list: MSYS2 converts it for native programs such as pkgconf and meson
+export PKG_CONFIG_PATH="$SHIM/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 pkg-config --modversion exempi-2.0
 echo "::endgroup::"
 

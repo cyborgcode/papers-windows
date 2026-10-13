@@ -287,6 +287,137 @@ pdf_document_get_n_pages (PpsDocument *document)"""),
     r = archive_read_open_filename (archive->libar, path, BUFFER_SIZE);
 #endif"""),
 
+    # ---- Paper sizes in the user's measurement system, as with
+    # nl_langinfo(_NL_MEASUREMENT_MEASUREMENT) on Linux
+    ("libdocument/pps-document-info.c",
+     """#ifdef HAVE__NL_MEASUREMENT_MEASUREMENT
+#include <langinfo.h>
+#endif""",
+     """#ifdef HAVE__NL_MEASUREMENT_MEASUREMENT
+#include <langinfo.h>
+#endif
+#ifdef G_OS_WIN32
+#include <windows.h>
+#endif"""),
+    ("libdocument/pps-document-info.c",
+     """#ifdef HAVE__NL_MEASUREMENT_MEASUREMENT
+gchar *imperial = NULL;""",
+     """#ifdef G_OS_WIN32
+    {
+        wchar_t measure[2];
+
+        /* LOCALE_IMEASURE: "0" metric, "1" U.S. */
+        if (GetLocaleInfoEx (LOCALE_NAME_USER_DEFAULT, LOCALE_IMEASURE, measure, G_N_ELEMENTS (measure)) > 0)
+            return measure[0] == L'1' ? GTK_UNIT_INCH : GTK_UNIT_MM;
+    }
+#endif
+
+#ifdef HAVE__NL_MEASUREMENT_MEASUREMENT
+    gchar *imperial = NULL;"""),
+
+    # ---- Per-document metadata (last page, zoom, layout, sidebar): GIO's
+    # "metadata::" attributes need GVfs, which Windows lacks. Keep one key
+    # file per document under the user data directory instead.
+    ("libview/context/pps-metadata.c",
+     """#define PPS_METADATA_NAMESPACE "metadata::papers\"""",
+     """#define PPS_METADATA_NAMESPACE "metadata::papers"
+
+#ifdef G_OS_WIN32
+#include <errno.h>
+
+#define PPS_METADATA_GROUP "Metadata"
+
+static gchar *
+pps_metadata_win32_path (GFile *file)
+{
+    g_autofree gchar *uri = g_file_get_uri (file);
+    g_autofree gchar *hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, uri, -1);
+    g_autofree gchar *name = g_strconcat (hash, ".ini", NULL);
+
+    return g_build_filename (g_get_user_data_dir (), "papers", "metadata", name, NULL);
+}
+
+static void
+pps_metadata_win32_load (PpsMetadata *metadata)
+{
+    g_autofree gchar *path = pps_metadata_win32_path (metadata->file);
+    g_autoptr (GKeyFile) keyfile = g_key_file_new ();
+    g_auto (GStrv) keys = NULL;
+    gsize i;
+
+    if (!g_key_file_load_from_file (keyfile, path, G_KEY_FILE_NONE, NULL))
+        return;
+
+    keys = g_key_file_get_keys (keyfile, PPS_METADATA_GROUP, NULL, NULL);
+    for (i = 0; keys != NULL && keys[i] != NULL; i++) {
+        gchar *value = g_key_file_get_string (keyfile, PPS_METADATA_GROUP, keys[i], NULL);
+
+        if (value != NULL)
+            g_hash_table_insert (metadata->items, g_strdup (keys[i]), value);
+    }
+}
+
+static void
+pps_metadata_win32_save (PpsMetadata *metadata)
+{
+    g_autofree gchar *path = pps_metadata_win32_path (metadata->file);
+    g_autofree gchar *dir = g_path_get_dirname (path);
+    g_autofree gchar *uri = g_file_get_uri (metadata->file);
+    g_autoptr (GKeyFile) keyfile = g_key_file_new ();
+    g_autoptr (GError) error = NULL;
+    GHashTableIter iter;
+    gpointer key, value;
+
+    g_key_file_set_string (keyfile, "Document", "uri", uri);
+    g_hash_table_iter_init (&iter, metadata->items);
+    while (g_hash_table_iter_next (&iter, &key, &value)) {
+        if (value != NULL)
+            g_key_file_set_string (keyfile, PPS_METADATA_GROUP, key, value);
+    }
+
+    if (g_mkdir_with_parents (dir, 0700) != 0) {
+        g_warning ("Failed to create %s: %s", dir, g_strerror (errno));
+        return;
+    }
+    if (!g_key_file_save_to_file (keyfile, path, &error))
+        g_warning ("Failed to save document metadata: %s", error->message);
+}
+#endif /* G_OS_WIN32 */"""),
+    ("libview/context/pps-metadata.c",
+     """static void
+pps_metadata_load (PpsMetadata *metadata)
+{""",
+     """static void
+pps_metadata_load (PpsMetadata *metadata)
+{
+#ifdef G_OS_WIN32
+    pps_metadata_win32_load (metadata);
+#else"""),
+    ("libview/context/pps-metadata.c",
+     """g_strfreev (attrs);
+g_object_unref (info);
+}
+
+PpsMetadata *""",
+     """g_strfreev (attrs);
+    g_object_unref (info);
+#endif /* G_OS_WIN32 */
+}
+
+PpsMetadata *"""),
+    ("libview/context/pps-metadata.c",
+     """g_hash_table_insert (metadata->items, g_strdup (key), g_strdup (value));
+if (!metadata->file)
+return TRUE;""",
+     """g_hash_table_insert (metadata->items, g_strdup (key), g_strdup (value));
+    if (!metadata->file)
+        return TRUE;
+
+#ifdef G_OS_WIN32
+    pps_metadata_win32_save (metadata);
+    return TRUE;
+#endif"""),
+
     # ---- libdocument/pps-document.c: no fcntl() on Windows
     ("libdocument/pps-document.c",
      """if (fstat (fd, &statbuf) == -1 ||
