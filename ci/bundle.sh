@@ -64,6 +64,21 @@ if [ -d "$MSYS_PREFIX/share/hunspell" ]; then
 	cp -r "$MSYS_PREFIX/share/hunspell" "$DIST/share/"
 fi
 
+# Modules loaded at run time, invisible to ldd:
+# - NSS crypto modules, used by Poppler to verify and create digital signatures
+for module in softokn3 freebl3 nssckbi; do
+	cp "$MSYS_PREFIX/bin/$module.dll" "$DIST/bin/"
+	if [ -f "$MSYS_PREFIX/bin/$module.chk" ]; then cp "$MSYS_PREFIX/bin/$module.chk" "$DIST/bin/"; fi
+done
+# - Enchant spell-checking providers: Windows' own spell checker and Hunspell
+mkdir -p "$DIST/lib/enchant-2" "$DIST/share/enchant-2"
+for provider in enchant_winspell enchant_hunspell; do
+	if [ -f "$MSYS_PREFIX/lib/enchant-2/$provider.dll" ]; then
+		cp "$MSYS_PREFIX/lib/enchant-2/$provider.dll" "$DIST/lib/enchant-2/"
+	fi
+done
+cp "$MSYS_PREFIX/share/enchant-2/enchant.ordering" "$DIST/share/enchant-2/" 2>/dev/null || true
+
 # Copy every MSYS2 DLL that the executables, backends and modules link
 # against, transitively, next to papers.exe.
 collect_dlls() {
