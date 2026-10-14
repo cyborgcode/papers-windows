@@ -61,12 +61,18 @@ foreach ($case in $cases) {
     Start-Sleep -Seconds 2
 }
 
-# Feature tour on the PDF sample, driven by Papers' own keyboard shortcuts
+# Feature tour on the PDF sample, driven by Papers' own keyboard shortcuts.
+# If Papers exits during a step, record its exit code and relaunch.
 $tourDoc = Join-Path $Samples 'sample.pdf'
-if (Test-Path $tourDoc) {
-    $proc = Start-Process -FilePath $exe -ArgumentList "`"$tourDoc`"" -PassThru `
-        -RedirectStandardError (Join-Path $OutDir 'tour.stderr.txt') -RedirectStandardOutput (Join-Path $OutDir 'tour.stdout.txt')
+function Start-Tour([int]$n) {
+    $p = Start-Process -FilePath $exe -ArgumentList "`"$tourDoc`"" -PassThru `
+        -RedirectStandardError (Join-Path $OutDir "tour-$n.stderr.txt") -RedirectStandardOutput (Join-Path $OutDir "tour-$n.stdout.txt")
     Start-Sleep -Seconds $WaitSeconds
+    return $p
+}
+if (Test-Path $tourDoc) {
+    $launch = 1
+    $proc = Start-Tour $launch
     $shell = New-Object -ComObject WScript.Shell
     $steps = @(
         @{ Name = 'find'; Keys = @('^f', 'page'); Undo = @('{ESC}') },
@@ -74,24 +80,34 @@ if (Test-Path $tourDoc) {
         @{ Name = 'night-mode'; Keys = @('^i'); Undo = @('^i') },
         @{ Name = 'dual-page'; Keys = @('d'); Undo = @('d') },
         @{ Name = 'zoom-in'; Keys = @('^{ADD}', '^{ADD}'); Undo = @('a') },
-        @{ Name = 'rotate'; Keys = @('^{RIGHT}'); Undo = @('^{LEFT}') },
+        @{ Name = 'rotate'; Keys = @('{ESC}', '^{RIGHT}'); Undo = @('^{LEFT}') },
         @{ Name = 'shortcuts'; Keys = @('^?'); Undo = @('{ESC}') },
         @{ Name = 'presentation'; Keys = @('{F5}'); Undo = @('{ESC}') },
-        @{ Name = 'print-dialog'; Keys = @('^p'); Undo = @('{ESC}') }
+        @{ Name = 'after-presentation'; Keys = @(); Undo = @() },
+        @{ Name = 'print-dialog'; Keys = @('^p'); Undo = @('{ESC}') },
+        @{ Name = 'after-print'; Keys = @(); Undo = @() }
     )
     $i = 0
     foreach ($step in $steps) {
         $i++
-        if ($proc.HasExited) { $summary += "tour: papers exited before step $($step.Name)"; $failures += 'tour'; break }
+        if ($proc.HasExited) {
+            $summary += ("tour: papers exited before step {0} with code 0x{1:X8}; relaunching" -f $step.Name, $proc.ExitCode)
+            $failures += "tour-$($step.Name)"
+            $launch++
+            $proc = Start-Tour $launch
+        }
         [void]$shell.AppActivate($proc.Id)
         Start-Sleep -Milliseconds 500
         foreach ($k in $step.Keys) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 400 }
         Start-Sleep -Seconds 3
         Save-Screenshot (Join-Path $OutDir ("tour-{0:D2}-{1}.png" -f $i, $step.Name))
         foreach ($k in $step.Undo) { [System.Windows.Forms.SendKeys]::SendWait($k); Start-Sleep -Milliseconds 400 }
-        Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 2
     }
-    if (-not $proc.HasExited) {
+    if ($proc.HasExited) {
+        $summary += ("tour: papers exited at the end with code 0x{0:X8}" -f $proc.ExitCode)
+        $failures += 'tour-end'
+    } else {
         $summary += "tour: completed $i steps, papers still running"
         Stop-Process -Id $proc.Id -Force
     }
