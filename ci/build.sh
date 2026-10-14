@@ -83,7 +83,7 @@ cd "$SRC"
 if [ ! -f build/build.ninja ]; then
 	meson setup build \
 		--prefix="$(winpath "$INSTALL")" \
-		--buildtype=release \
+		--buildtype="${PAPERS_BUILDTYPE:-release}" \
 		-Dnautilus=false \
 		-Dpreviewer=false \
 		-Dthumbnailer=false \

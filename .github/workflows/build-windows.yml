@@ -5,16 +5,22 @@ on:
     branches: [main]
     paths-ignore: ['**.md']
   workflow_dispatch:
+    inputs:
+      diagnose:
+        description: Build with debug symbols and capture crash backtraces under gdb
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.ref }}-${{ inputs.diagnose || false }}
   cancel-in-progress: true
 
 env:
   PAPERS_VERSION: '50.2'
+  PAPERS_BUILDTYPE: ${{ inputs.diagnose && 'debugoptimized' || 'release' }}
 
 jobs:
   windows:
@@ -27,6 +33,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: UCRT64
           update: true
@@ -58,6 +65,7 @@ jobs:
             adwaita-icon-theme:p
             hicolor-icon-theme:p
             python-pillow:p
+            gdb:p
 
       - name: Restore Rust build cache
         uses: actions/cache@v4
@@ -66,9 +74,9 @@ jobs:
             _work/papers/build/cargo-home/registry
             _work/papers/build/cargo-home/git
             _work/papers/build/shell/src/release
-          key: cargo-${{ env.PAPERS_VERSION }}-${{ hashFiles('ci/port-to-windows.py', 'packaging/papers.rc') }}
+          key: cargo-${{ env.PAPERS_BUILDTYPE }}-${{ env.PAPERS_VERSION }}-${{ hashFiles('ci/port-to-windows.py', 'packaging/papers.rc') }}
           restore-keys: |
-            cargo-${{ env.PAPERS_VERSION }}-
+            cargo-${{ env.PAPERS_BUILDTYPE }}-${{ env.PAPERS_VERSION }}-
 
       - name: Build
         run: bash ci/build.sh
@@ -95,6 +103,12 @@ jobs:
         shell: pwsh
         run: ./ci/smoke-test.ps1 -Bundle _work/dist/Papers -Samples _work/samples -OutDir _work/smoke
 
+      - name: Diagnose presentation mode exit
+        if: inputs.diagnose
+        continue-on-error: true
+        shell: pwsh
+        run: ./ci/diagnose.ps1 -Bundle _work/dist/Papers -Document "$PWD\_work\samples\sample.pdf" -OutDir _work/diag -Gdb "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin\gdb.exe"
+
       - name: Installer and portable zip
         shell: pwsh
         run: |
@@ -114,7 +128,7 @@ jobs:
           compression-level: 0
 
       - name: Publish release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && !inputs.diagnose
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -132,4 +146,5 @@ jobs:
           path: |
             _work/logs
             _work/smoke
+            _work/diag
           if-no-files-found: ignore

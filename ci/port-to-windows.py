@@ -617,6 +617,36 @@ type = PPS_TYPE_PRINT_OPERATION_PRINT;
 #endif
     } else if (PPS_IS_FILE_EXPORTER (document)) {"""),
 
+    # ---- GTK 4's Windows print dialog aborts when an application adds a
+    # custom tab (gtkprintoperation-win32.c instantiates the abstract
+    # GtkWidget type). Skip Papers' "Page Handling" tab there and use its
+    # defaults: shrink to printable area, auto-rotate and center.
+    ("libview/pps-print-operation.c",
+     """g_signal_connect_swapped (print->op, "create_custom_widget",
+G_CALLBACK (pps_print_operation_print_create_custom_widget),
+print);
+g_signal_connect_swapped (print->op, "custom_widget_apply",
+G_CALLBACK (pps_print_operation_print_custom_widget_apply),
+print);""",
+     """#ifdef G_OS_WIN32
+    print->page_scale = PPS_SCALE_SHRINK_TO_PRINTABLE_AREA;
+    print->autorotate = TRUE;
+    print->use_source_size = FALSE;
+    print->draw_borders = FALSE;
+#else
+    g_signal_connect_swapped (print->op, "create_custom_widget",
+                              G_CALLBACK (pps_print_operation_print_create_custom_widget),
+                              print);
+    g_signal_connect_swapped (print->op, "custom_widget_apply",
+                              G_CALLBACK (pps_print_operation_print_custom_widget_apply),
+                              print);
+#endif"""),
+    ("libview/pps-print-operation.c",
+     """gtk_print_operation_set_custom_tab_label (print->op, _ ("Page Handling"));""",
+     """#ifndef G_OS_WIN32
+    gtk_print_operation_set_custom_tab_label (print->op, _ ("Page Handling"));
+#endif"""),
+
     # ---- shell build: the binary has an .exe suffix on Windows
     ("shell/src/meson.build",
      "cargo = find_program('cargo', required: true)",
