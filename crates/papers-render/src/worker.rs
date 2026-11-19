@@ -323,7 +323,7 @@ impl OpenDoc {
         }
         let mut out = Vec::with_capacity(tw * th);
         for row in bytes.chunks_exact(stride).take(th) {
-            out.extend(row[..tw * 4].chunks_exact(4).map(|p| Color32::from_rgba_premultiplied(p[0], p[1], p[2], 255)));
+            out.extend(row[..tw * 4].as_chunks::<4>().0.iter().map(|p| Color32::from_rgba_premultiplied(p[0], p[1], p[2], 255)));
         }
         Ok(out)
     }
