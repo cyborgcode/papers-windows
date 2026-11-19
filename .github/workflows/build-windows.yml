@@ -1,9 +1,7 @@
-name: Build Papers for Windows
+name: Build GNOME Papers (GTK, legacy)
 
+# The Rust build (build.yml) is the main one now; this older GTK build only runs on demand.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ['**.md']
   workflow_dispatch:
     inputs:
       diagnose:
@@ -136,7 +134,7 @@ jobs:
           $tag = "papers-$env:PAPERS_VERSION-windows"
           gh release delete $tag --yes --cleanup-tag 2>$null
           $notes = "GNOME Papers $env:PAPERS_VERSION built for Windows x64 (run $env:GITHUB_RUN_NUMBER, commit $env:GITHUB_SHA).`n`nInstall with the setup .exe, or unzip the portable build and run Papers\bin\papers.exe."
-          gh release create $tag (Get-ChildItem _work\out\*).FullName --title "Papers $env:PAPERS_VERSION for Windows" --notes $notes --target $env:GITHUB_SHA
+          gh release create $tag (Get-ChildItem _work\out\*).FullName --title "Papers $env:PAPERS_VERSION for Windows" --notes $notes --target $env:GITHUB_SHA --latest=false
 
       - name: Upload logs and screenshots
         if: always()

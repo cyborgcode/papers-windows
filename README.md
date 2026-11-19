@@ -1,79 +1,131 @@
 # Papers for Windows
 
-A Windows build of [GNOME Papers](https://gitlab.gnome.org/GNOME/papers)
-(the GNOME "Document Viewer") **50.2**. It is the real application, compiled
-for Windows with GTK 4 and libadwaita from MSYS2, so it has the same
-features and interface as the Linux version:
+A fast PDF reader for Windows, written in Rust. It is a rebuild of the earlier
+GTK port of GNOME Papers, designed so the window never waits on rendering. It
+has a night mode that switches instantly and keeps the page's colours readable,
+and it updates itself.
 
-- PDF, DjVu, TIFF and comic books (CBZ, CBR, CB7, CBT)
-- thumbnails, outline, annotations, attachments and layers sidebars
-- search with whole-word and case-sensitive options
-- continuous, dual-page, odd-pages-left and right-to-left layouts, rotation, zoom
-- night mode, fullscreen and presentation mode with transitions
-- highlight, underline, strike-through, squiggly, notes, free text, ink and
-  highlighter annotations, plus an eraser
-- forms, password-protected documents, document properties and digital
-  signature verification
-- printing through the native Windows print dialog
+## Why it is fast
+
+- **Rendering never blocks the window.** PDFium runs on its own thread. The
+  window only draws finished images, so scrolling and zooming stay smooth even
+  on heavy pages.
+- **Only what you see is rendered.** Pages are cut into tiles. The visible
+  tiles are rendered first, then a few pages ahead. When you scroll past
+  something, it is dropped from the queue instead of rendered for nothing.
+- **Zooming is instant.** While you zoom with Ctrl+wheel or a pinch, the tiles
+  you already have are stretched. Sharp tiles at the new size are rendered once
+  the zoom stops changing, and they appear on top without any blank frames.
+- **Night mode doesn't lag.** Pages are rendered once in day colours and kept
+  in memory. Night mode is a colour filter that runs in parallel on all cores
+  in a few milliseconds per page; it doesn't re-render anything. Switching back
+  to day mode reuses the cached tiles.
+- **New tiles reach the GPU gradually.** At most 48 MB are uploaded per frame,
+  so a burst of tiles never causes a stutter.
+
+Night mode has two styles (menu → Night Mode Style):
+
+- **Smart** (default) inverts lightness but keeps hues, so red stays red and
+  blue links stay blue. White paper becomes a soft dark grey instead of pure
+  black.
+- **Inverted** is the plain colour inversion of the GNOME version.
+
+## Features
+
+- Continuous scrolling, dual pages, rotation, fit width and fit page, zoom from
+  5 % to 6400 %
+- Text search with match case and whole-word options, with every match
+  highlighted
+- Text selection and copying (drag over text; double-click selects a word),
+  plus clickable links
+- Sidebar with the outline (table of contents) and page thumbnails
+- Night mode (Ctrl+I), fullscreen (F11) and presentation mode (F5)
+- Password-protected PDFs, forms and annotations, document properties
+- Printing through the Windows print dialog (Ctrl+P)
+- Remembers each document's page, zoom and rotation, and keeps a recent-files
+  list
+- Reloads automatically when the file changes on disk, which is handy when
+  writing LaTeX
+- Opens files from the command line (`papers.exe file.pdf --page 12`), by drag
+  and drop, and through "Open with"
+
+Press **Keyboard Shortcuts** in the menu to see every shortcut.
 
 ## Install
 
-Download the setup program or the portable zip from this repository's
-**Releases** page:
+From this repository's **Releases** page:
 
-- `Papers-50.2-windows-x64-setup.exe` installs Papers, adds a Start menu
-  entry and lists it under "Open with" for supported files.
-- `Papers-50.2-windows-x64-portable.zip` runs without installing: unzip it
-  and start `Papers\bin\papers.exe`.
+- `Papers-<version>-windows-x64-setup.exe` installs Papers, adds a Start menu
+  entry and registers it under "Open with" for PDF files. It upgrades an
+  existing installation of the GTK build in place.
+- `Papers-<version>-windows-x64-portable.zip` runs without installing: unzip it
+  and start `Papers\papers.exe`.
 
-## How it is built
+## Updates
 
-This repository does not contain a copy of the Papers source. The
-[workflow](.github/workflows/build-windows.yml) runs on a GitHub Windows
-runner and:
+Papers checks for a new release once a day; this can be turned off in menu →
+Check for Updates. When a new release is out, a bar offers **Update and
+restart**. The update:
 
-1. fetches the upstream `50.2` tag and applies the Windows changes with
-   [`ci/port-to-windows.py`](ci/port-to-windows.py) (the resulting diff is
-   saved as `windows-port.patch` in each run's logs),
-2. builds [`exempi-shim`](exempi-shim), a small libxml2-based
-   implementation of the read-only exempi API that Papers uses for XMP
-   metadata (exempi itself is not available for Windows),
-3. compiles Papers with Meson, Cargo and the MSYS2 UCRT64 toolchain,
-4. bundles the DLLs, GDK-Pixbuf loaders, GSettings schemas, icon themes,
-   translations and Poppler data next to `papers.exe` ([`ci/bundle.sh`](ci/bundle.sh)),
-5. opens sample PDF, DjVu, TIFF and comic documents to check that the app
-   starts and stays up ([`ci/smoke-test.ps1`](ci/smoke-test.ps1)),
-6. packages an Inno Setup installer and a portable zip.
+1. downloads the setup program or the portable zip, whichever matches your copy,
+2. checks its size and SHA-256 against the release's `latest.json`,
+3. hands over to `papers-updater.exe`, which waits for Papers to close and then
+   installs it: the setup program runs silently, or the zip is unpacked over the
+   portable folder (if any file can't be replaced, the old files are put back),
+4. starts Papers again on the same document.
 
-Build logs, the applied diff and smoke-test screenshots of each run are
-uploaded as the `logs` artifact.
+You can also run the updater yourself:
 
-### What the Windows patch changes
+```bash
+papers-updater check
+```
 
-- Locates backends and translations relative to `papers.exe` instead of
-  compile-time paths, so the install is relocatable.
-- Detects document types from file signatures and extensions, because Windows
-  has no shared-mime-info database, and adds extension-based filters to the
-  file chooser.
-- Replaces the few POSIX-only calls (`fcntl`, `O_CLOEXEC`) with Windows
-  equivalents.
-- Prints DjVu and TIFF by rasterizing pages through `GtkPrintOperation`; the
-  upstream route uses a Unix-only print dialog.
-- Starts new windows with properly quoted arguments, builds `papers.exe` as a
-  GUI program (no console window), embeds the icon and version information,
-  and opens the online manual for Help.
+```bash
+papers-updater update
+```
 
-### Differences from the Linux version
+## Building
 
-- Help opens <https://help.gnome.org/papers/> in the browser; the offline
-  Yelp manual is not available on Windows.
-- Passwords for encrypted documents cannot be remembered in a keyring
-  (the "Remember forever" option has no effect).
-- Compressed `.pdf.gz` / `.pdf.bz2` / `.pdf.xz` files need the matching
-  command-line decompressor on `PATH`.
-- Digital signing uses Poppler's NSS certificate database; certificates have
-  to be imported into it with NSS tools before "Sign Digitally" can use them.
+You need Rust (stable) and the PDFium library from
+[pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases). Put
+`pdfium.dll` (Windows) or `libpdfium.so` (Linux) next to the executable, or
+point `PDFIUM_DIR` at its folder.
+
+```bash
+cargo build --release -p papers -p papers-updater
+```
+
+```bash
+cargo test -p papers-render -p papers-update -p papers
+```
+
+The rendering tests need `PDFIUM_DIR` and `PAPERS_SAMPLE_PDF`; without them,
+they are skipped.
+
+| Path | What it is |
+| --- | --- |
+| `crates/papers-render` | Render thread: PDFium, tiles, cache, night filter, search, text and links, printing |
+| `crates/papers-update` | Release manifest, version checks, verified downloads, installing updates |
+| `apps/papers` | The reader (egui/wgpu) |
+| `apps/papers-updater` | `papers-updater.exe` |
+| `packaging/papers-rs.iss` | Inno Setup script |
+| `.github/workflows/build.yml` | CI: tests, Windows build, smoke test, installer, portable zip, `latest.json`, release |
+
+The [workflow](.github/workflows/build.yml) builds on a Windows runner, starts
+the app on a sample PDF and takes screenshots through a keyboard-driven tour.
+It then packages the installer and the portable zip and writes `latest.json`.
+On `main`, it publishes a release tagged `v<version>`. To ship an update, bump
+`version` in the top-level `Cargo.toml`.
+
+### The earlier GTK build
+
+The scripts that built GNOME Papers 50.2 with GTK 4 from MSYS2 (`ci/build.sh`,
+`ci/port-to-windows.py`, `exempi-shim/`, `packaging/papers.iss`, and so on) are
+still here. Their workflow, [`build-windows.yml`](.github/workflows/build-windows.yml),
+now runs only when started by hand. Unlike the GTK build, the Rust build reads
+PDF only; DjVu, TIFF and comic books aren't supported yet.
 
 ## License
 
-Papers is GPL-2.0-or-later, and so are the patches and scripts here.
+GPL-2.0-or-later. PDFium is BSD-3-Clause; its license is shipped in
+`licenses\`.

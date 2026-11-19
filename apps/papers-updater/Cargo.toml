@@ -1,0 +1,20 @@
+[package]
+name = "papers-updater"
+description = "Checks for, downloads and installs Papers updates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "papers-updater"
+path = "src/main.rs"
+
+[dependencies]
+papers-update.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+winresource = "0.1"

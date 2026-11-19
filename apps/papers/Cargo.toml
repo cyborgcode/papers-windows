@@ -1,0 +1,29 @@
+[package]
+name = "papers"
+description = "Papers: a fast PDF reader with a lag-free night mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "papers"
+path = "src/main.rs"
+
+[dependencies]
+papers-render.workspace = true
+papers-update.workspace = true
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+env_logger.workspace = true
+png = "0.18"
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+
+[build-dependencies]
+winresource = "0.1"

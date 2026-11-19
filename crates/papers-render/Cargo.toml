@@ -1,0 +1,25 @@
+[package]
+name = "papers-render"
+description = "Background PDF rendering engine for Papers: tiled rendering, caching and night mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+egui.workspace = true
+pdfium-render.workspace = true
+rayon.workspace = true
+log.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",
+    "Win32_UI_Controls_Dialogs",
+] }
+
+[dev-dependencies]
+egui = "0.37"
+png = "0.18"

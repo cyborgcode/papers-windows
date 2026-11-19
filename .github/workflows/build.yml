@@ -1,0 +1,147 @@
+name: Build Papers
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # https://github.com/bblanchon/pdfium-binaries/releases
+  PDFIUM_RELEASE: chromium/8165
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: PDFium for Linux
+        run: |
+          mkdir -p _work/pdfium
+          curl -sSfL "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_RELEASE}/pdfium-linux-x64.tgz" | tar xz -C _work/pdfium
+      - name: Sample documents
+        run: |
+          pip install --quiet pillow
+          python ci/make-samples.py _work/samples
+      - name: Test the engine and the updater
+        env:
+          PDFIUM_DIR: ${{ github.workspace }}/_work/pdfium/lib
+          PAPERS_SAMPLE_PDF: ${{ github.workspace }}/_work/samples/sample.pdf
+        run: cargo test --locked -p papers-render -p papers-update -p papers-updater
+      - name: Clippy
+        run: cargo clippy --locked -p papers-render -p papers-update -p papers-updater -- -D warnings
+
+  windows:
+    name: Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Papers $v"
+
+      - name: PDFium for Windows
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force _work\pdfium | Out-Null
+          $url = "https://github.com/bblanchon/pdfium-binaries/releases/download/$env:PDFIUM_RELEASE/pdfium-win-x64.tgz"
+          Invoke-WebRequest $url -OutFile _work\pdfium.tgz
+          tar -xzf _work\pdfium.tgz -C _work\pdfium
+          Get-ChildItem _work\pdfium\bin
+
+      - name: Build
+        run: cargo build --release --locked -p papers -p papers-updater
+
+      - name: Test the updater on Windows
+        run: cargo test --release --locked -p papers-update
+
+      - name: Stage files
+        shell: pwsh
+        run: |
+          $d = "_work\dist\Papers"
+          New-Item -ItemType Directory -Force "$d\licenses" | Out-Null
+          Copy-Item target\release\papers.exe, target\release\papers-updater.exe, _work\pdfium\bin\pdfium.dll $d
+          Copy-Item LICENSE "$d\LICENSE.txt"
+          Copy-Item _work\pdfium\LICENSE "$d\licenses\PDFium-LICENSE.txt"
+          if (Test-Path _work\pdfium\licenses) { Copy-Item _work\pdfium\licenses\* "$d\licenses\" -Recurse }
+          Get-ChildItem $d -Recurse | Format-Table FullName, Length
+
+      - name: Sample documents
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pillow
+          python ci/make-samples.py _work/samples
+
+      - name: Smoke test
+        shell: pwsh
+        run: ./ci/smoke-test-rs.ps1 -Bundle _work\dist\Papers -Samples _work\samples -OutDir _work\smoke
+
+      - name: Installer and portable zip
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y | Out-Null }
+          & $iscc /Qp "/DAppVersion=$v" "/DSourceDir=$PWD\_work\dist\Papers" "/DOutputDir=$PWD\_work\out" packaging\papers-rs.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          # The portable build carries a marker so the updater knows to unpack over it.
+          "Portable copy of Papers: settings are kept per user; updates unpack over this folder." | Set-Content _work\dist\Papers\portable.txt
+          Compress-Archive -Path _work\dist\Papers -DestinationPath "_work\out\Papers-$v-windows-x64-portable.zip"
+          Remove-Item _work\dist\Papers\portable.txt
+
+      - name: Release manifest
+        shell: pwsh
+        run: ./ci/make-manifest.ps1 -Version "${{ steps.version.outputs.version }}" -OutDir _work\out -Repository "${{ github.repository }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papers-${{ steps.version.outputs.version }}-windows-x64
+          path: _work/out/*
+          compression-level: 0
+
+      - name: Publish release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $tag = "v$v"
+          $files = (Get-ChildItem _work\out\*).FullName
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $files --clobber
+          } else {
+            $notes = "Papers $v for Windows x64 (commit $env:GITHUB_SHA).`n`nInstall with the setup program, or unzip the portable build and run Papers\papers.exe. Installed and portable copies update themselves."
+            gh release create $tag $files --title "Papers $v" --notes $notes --target $env:GITHUB_SHA --latest
+          }
+
+      - name: Upload smoke-test screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test
+          path: _work/smoke
+          if-no-files-found: ignore
