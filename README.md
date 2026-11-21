@@ -1,9 +1,21 @@
 # Papers for Windows
 
-A fast PDF reader for Windows, written in Rust. It is a rebuild of the earlier
-GTK port of GNOME Papers, designed so the window never waits on rendering. It
-has a night mode that switches instantly and keeps the page's colours readable,
-and it updates itself.
+A fast PDF reader for Windows, written in Rust, with the look of GNOME Papers.
+It is a rebuild of the earlier GTK port of GNOME Papers, designed so the window
+never waits on rendering. It has a night mode that switches instantly and keeps
+the page's colours readable, and it updates itself.
+
+## Looks like GNOME Papers
+
+The interface follows Papers 50: the sidebar with its own header bar
+(search, "Document Viewer", main menu) and thumbnails / outline switched at the
+bottom, a find sidebar listing every match in its line of text, the document
+header bar with the page selector and the ⋮ document menu, round zoom buttons
+floating in the corner, and GNOME's start, loading, password and error pages.
+It uses libadwaita's colours in light and dark mode (following Windows), the
+Adwaita Sans font, GNOME-style window buttons in the header bar, and Papers'
+keyboard shortcuts. Start it with `--native-titlebar` (or set
+`PAPERS_NATIVE_TITLEBAR=1`) to use the normal Windows title bar instead.
 
 ## Why it is fast
 
@@ -23,25 +35,22 @@ and it updates itself.
 - **New tiles reach the GPU gradually.** At most 48 MB are uploaded per frame,
   so a burst of tiles never causes a stutter.
 
-Night mode has two styles (menu → Night Mode Style):
-
-- **Smart** (default) inverts lightness but keeps hues, so red stays red and
-  blue links stay blue. White paper becomes a soft dark grey instead of pure
-  black.
-- **Inverted** is the plain colour inversion of the GNOME version.
+Night mode (Ctrl+I) uses the same filter as GNOME Papers, `invert(1)
+hue-rotate(180deg)`: black and white swap, but red stays red and blue links stay
+blue.
 
 ## Features
 
-- Continuous scrolling, dual pages, rotation, fit width and fit page, zoom from
-  5 % to 6400 %
-- Text search with match case and whole-word options, with every match
-  highlighted
+- Continuous or page-by-page scrolling, dual pages (odd pages left, right to
+  left), rotation, fit width and fit page, zoom from 5 % to 6400 %
+- Search with case-sensitive and whole-word options; results are listed in the
+  sidebar and every match is highlighted
 - Text selection and copying (drag over text; double-click selects a word),
-  plus clickable links
+  clickable links and a right-click menu
 - Sidebar with the outline (table of contents) and page thumbnails
 - Night mode (Ctrl+I), fullscreen (F11) and presentation mode (F5)
 - Password-protected PDFs, forms and annotations, document properties
-- Printing through the Windows print dialog (Ctrl+P)
+- Printing through the Windows print dialog (Ctrl+P), Save As, Open With
 - Remembers each document's page, zoom and rotation, and keeps a recent-files
   list
 - Reloads automatically when the file changes on disk, which is handy when
@@ -49,7 +58,7 @@ Night mode has two styles (menu → Night Mode Style):
 - Opens files from the command line (`papers.exe file.pdf --page 12`), by drag
   and drop, and through "Open with"
 
-Press **Keyboard Shortcuts** in the menu to see every shortcut.
+Press **Keyboard Shortcuts** in the main menu (Ctrl+?) to see every shortcut.
 
 ## Install
 
@@ -63,8 +72,8 @@ From this repository's **Releases** page:
 
 ## Updates
 
-Papers checks for a new release once a day; this can be turned off in menu →
-Check for Updates. When a new release is out, a bar offers **Update and
+Papers checks for a new release once a day; this can be turned off in main
+menu → Check for Updates. When a new release is out, a bar offers **Update and
 restart**. The update:
 
 1. downloads the setup program or the portable zip, whichever matches your copy,
@@ -106,7 +115,7 @@ they are skipped.
 | --- | --- |
 | `crates/papers-render` | Render thread: PDFium, tiles, cache, night filter, search, text and links, printing |
 | `crates/papers-update` | Release manifest, version checks, verified downloads, installing updates |
-| `apps/papers` | The reader (egui/wgpu) |
+| `apps/papers` | The reader (egui/wgpu); `src/adw.rs` is the GNOME/Adwaita look |
 | `apps/papers-updater` | `papers-updater.exe` |
 | `packaging/papers-rs.iss` | Inno Setup script |
 | `.github/workflows/build.yml` | CI: tests, Windows build, smoke test, installer, portable zip, `latest.json`, release |
@@ -127,5 +136,5 @@ PDF only; DjVu, TIFF and comic books aren't supported yet.
 
 ## License
 
-GPL-2.0-or-later. PDFium is BSD-3-Clause; its license is shipped in
-`licenses\`.
+GPL-2.0-or-later. PDFium is BSD-3-Clause and the Adwaita Sans font is under the
+SIL Open Font License 1.1; their licenses are shipped in `licenses\`.

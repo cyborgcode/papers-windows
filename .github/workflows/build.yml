@@ -84,6 +84,7 @@ jobs:
           Copy-Item target\release\papers.exe, target\release\papers-updater.exe, _work\pdfium\bin\pdfium.dll $d
           Copy-Item LICENSE "$d\LICENSE.txt"
           Copy-Item _work\pdfium\LICENSE "$d\licenses\PDFium-LICENSE.txt"
+          Copy-Item apps\papers\assets\fonts\OFL.txt "$d\licenses\AdwaitaSans-OFL.txt"
           if (Test-Path _work\pdfium\licenses) { Copy-Item _work\pdfium\licenses\* "$d\licenses\" -Recurse }
           Get-ChildItem $d -Recurse | Format-Table FullName, Length
 

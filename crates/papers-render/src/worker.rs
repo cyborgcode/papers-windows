@@ -1,8 +1,8 @@
 //! The render thread. Owns PDFium and every open document.
 
 use crate::{
-    Dest, DocId, DocInfo, Event, Link, LinkTarget, NightStyle, NormRect, OutlineItem, PageExtras, Request, Rotation,
-    SearchOptions, TextChar, TileKey, night::Filter,
+    Dest, DocId, DocInfo, Event, Link, LinkTarget, NightStyle, NormRect, OutlineItem, PageExtras, PropertyGroup, Request,
+    Rotation, SearchMatch, SearchOptions, TextChar, TileKey, night::Filter,
 };
 use egui::{Color32, ColorImage};
 use pdfium_render::prelude::*;
@@ -259,7 +259,7 @@ impl Worker {
             self.search = None;
             return;
         };
-        let matches = match doc.document.pages().get(index as u16 as PdfPageIndex) {
+        let matches = match doc.document.pages().get(index as PdfPageIndex) {
             Ok(page) => search_page(&page, &job.query, &job.options),
             Err(_) => Vec::new(),
         };
@@ -411,23 +411,78 @@ fn read_extras(page: &PdfPage, page_sizes: &[[f32; 2]]) -> PageExtras {
     extras
 }
 
-fn search_page(page: &PdfPage, query: &str, options: &SearchOptions) -> Vec<Vec<NormRect>> {
+fn search_page(page: &PdfPage, query: &str, options: &SearchOptions) -> Vec<SearchMatch> {
     let norm = Normaliser::new(page);
     let mut matches = Vec::new();
     let Ok(text) = page.text() else { return matches };
     let search_options = PdfSearchOptions::new().match_case(options.match_case).match_whole_word(options.whole_word);
     let Ok(search) = text.search(query, &search_options) else { return matches };
+    let page_width = page.width().value;
+    // How many matches were already found on each line, to pick the right occurrence.
+    let mut seen_on_line: HashMap<(i32, i32), usize> = HashMap::new();
     for segments in search.iter(PdfSearchDirection::SearchForward) {
         // A match spanning several lines comes back as several segments.
-        let rects: Vec<NormRect> = segments.iter().map(|s| norm.rect(s.bounds())).collect();
-        if !rects.is_empty() {
-            matches.push(rects);
-        }
+        let bounds: Vec<PdfRect> = segments.iter().map(|s| s.bounds()).collect();
+        let Some(first) = bounds.first().copied() else { continue };
+        let rects: Vec<NormRect> = bounds.iter().map(|b| norm.rect(*b)).collect();
+        let line_rect = PdfRect::new_from_values(first.bottom().value, 0.0, first.top().value, page_width);
+        let line = text.inside_rect(line_rect);
+        let key = (first.bottom().value.round() as i32, first.top().value.round() as i32);
+        let nth = seen_on_line.entry(key).or_insert(0);
+        let (context, range) = context_for(&line, query, *nth, options.match_case);
+        *nth += 1;
+        matches.push(SearchMatch { rects, context, range });
         if matches.len() >= 10_000 {
             break;
         }
     }
     matches
+}
+
+/// The text around the `nth` occurrence of `query` in `line`, trimmed to a short excerpt,
+/// with the byte range of the match inside the excerpt.
+pub(crate) fn context_for(line: &str, query: &str, nth: usize, match_case: bool) -> (String, std::ops::Range<usize>) {
+    let line: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let fold = |s: &str| if match_case { s.to_string() } else { s.to_lowercase() };
+    let (hay, needle) = (fold(&line), fold(query.trim()));
+    // Lower-casing can change byte lengths; only use positions when it did not.
+    let found = if needle.is_empty() || hay.len() != line.len() {
+        None
+    } else {
+        hay.match_indices(&needle).nth(nth).or_else(|| hay.match_indices(&needle).last()).map(|(i, _)| i)
+    };
+    let Some(start) = found else {
+        let q = query.trim().to_string();
+        let len = q.len();
+        return (q, 0..len);
+    };
+    let end = start + needle.len();
+    const BEFORE: usize = 28;
+    const AFTER: usize = 48;
+    let mut from = start.saturating_sub(BEFORE);
+    while !line.is_char_boundary(from) {
+        from -= 1;
+    }
+    let mut to = (end + AFTER).min(line.len());
+    while !line.is_char_boundary(to) {
+        to += 1;
+    }
+    // Start and end on word boundaries when the excerpt is cut.
+    if from > 0
+        && let Some(sp) = line[from..start].find(' ')
+    {
+        from += sp + 1;
+    }
+    if to < line.len()
+        && let Some(sp) = line[end..to].rfind(' ')
+    {
+        to = end + sp;
+    }
+    let prefix = if from > 0 { "…" } else { "" };
+    let suffix = if to < line.len() { "…" } else { "" };
+    let excerpt = format!("{prefix}{}{suffix}", &line[from..to]);
+    let s = prefix.len() + (start - from);
+    (excerpt, s..s + (end - start))
 }
 
 fn dest_of(dest: &PdfDestination, page_sizes: &[[f32; 2]]) -> Option<Dest> {
@@ -479,36 +534,69 @@ fn read_outline(document: &PdfDocument<'static>, page_sizes: &[[f32; 2]]) -> Vec
     walk(document.bookmarks().root(), page_sizes, &mut budget, 0)
 }
 
-fn read_properties(document: &PdfDocument, path: &Path, page_sizes: &[[f32; 2]]) -> (Vec<(String, String)>, Option<String>) {
+fn read_properties(document: &PdfDocument, path: &Path, page_sizes: &[[f32; 2]]) -> (Vec<PropertyGroup>, Option<String>) {
     use PdfDocumentMetadataTagType as T;
     let meta = document.metadata();
     let get = |t: T| meta.get(t).map(|v| v.value().trim().to_string()).filter(|v| !v.is_empty());
     let title = get(T::Title);
-    let mut props = Vec::new();
-    let mut push = |label: &str, value: Option<String>| {
-        if let Some(v) = value {
-            props.push((label.to_string(), v));
-        }
+    let group = |title: &str, rows: Vec<(&str, Option<String>)>| PropertyGroup {
+        title: title.to_string(),
+        rows: rows.into_iter().filter_map(|(k, v)| v.map(|v| (k.to_string(), v))).collect(),
     };
-    push("Title", title.clone());
-    push("Author", get(T::Author));
-    push("Subject", get(T::Subject));
-    push("Keywords", get(T::Keywords));
-    push("Creator", get(T::Creator));
-    push("Producer", get(T::Producer));
-    push("Created", get(T::CreationDate).map(|d| pdf_date(&d)));
-    push("Modified", get(T::ModificationDate).map(|d| pdf_date(&d)));
-    push("Pages", Some(page_sizes.len().to_string()));
-    if let Some([w, h]) = page_sizes.first() {
-        let mm = |pt: f32| pt / 72.0 * 25.4;
-        push("Page size", Some(format!("{:.0} × {:.0} mm ({:.1} × {:.1} in)", mm(*w), mm(*h), w / 72.0, h / 72.0)));
+    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+    let folder = path.parent().map(|p| p.display().to_string());
+    let size = std::fs::metadata(path).ok().map(|m| human_size(m.len()));
+    let paper = page_sizes.first().map(|[w, h]| paper_size(*w, *h));
+    let groups = vec![
+        group("File", vec![("Name", file_name), ("Folder", folder), ("Size", size)]),
+        group(
+            "Content",
+            vec![
+                ("Title", title.clone()),
+                ("Subject", get(T::Subject)),
+                ("Author", get(T::Author)),
+                ("Keywords", get(T::Keywords)),
+                ("Producer", get(T::Producer)),
+                ("Creator", get(T::Creator)),
+            ],
+        ),
+        group(
+            "Date & Time",
+            vec![("Created", get(T::CreationDate).map(|d| pdf_date(&d))), ("Modified", get(T::ModificationDate).map(|d| pdf_date(&d)))],
+        ),
+        group(
+            "Format",
+            vec![
+                ("Format", pdf_version(document.version()).map(|v| format!("PDF-{v}"))),
+                ("Number of Pages", Some(page_sizes.len().to_string())),
+                ("Paper Size", paper),
+            ],
+        ),
+    ];
+    (groups.into_iter().filter(|g| !g.rows.is_empty()).collect(), title)
+}
+
+/// "A4, Portrait (210 × 297 mm)" style paper size, as Papers shows it.
+fn paper_size(w_pt: f32, h_pt: f32) -> String {
+    let mm = |pt: f32| pt / 72.0 * 25.4;
+    let (w, h) = (mm(w_pt), mm(h_pt));
+    let (short, long) = (w.min(h), w.max(h));
+    const NAMED: [(&str, f32, f32); 8] = [
+        ("A3", 297.0, 420.0),
+        ("A4", 210.0, 297.0),
+        ("A5", 148.0, 210.0),
+        ("B5", 176.0, 250.0),
+        ("US Letter", 215.9, 279.4),
+        ("US Legal", 215.9, 355.6),
+        ("Tabloid", 279.4, 431.8),
+        ("Executive", 184.15, 266.7),
+    ];
+    let orientation = if w > h { "Landscape" } else { "Portrait" };
+    let dims = format!("{w:.0} × {h:.0} mm");
+    match NAMED.iter().find(|(_, a, b)| (short - a).abs() < 3.0 && (long - b).abs() < 3.0) {
+        Some((name, ..)) => format!("{name}, {orientation} ({dims})"),
+        None => dims,
     }
-    push("PDF version", pdf_version(document.version()));
-    if let Ok(md) = std::fs::metadata(path) {
-        push("File size", Some(human_size(md.len())));
-    }
-    push("Location", Some(path.display().to_string()));
-    (props, title)
 }
 
 fn pdf_version(v: PdfDocumentVersion) -> Option<String> {
@@ -596,6 +684,30 @@ mod tests {
         assert_eq!(pdf_date("D:20240131093000+01'00'"), "2024-01-31 09:30");
         assert_eq!(pdf_date("D:20240131"), "2024-01-31");
         assert_eq!(pdf_date("garbage"), "garbage");
+    }
+
+    #[test]
+    fn search_context() {
+        let (c, r) = context_for("The quick brown fox jumps over the lazy dog", "fox", 0, false);
+        assert_eq!(&c[r], "fox");
+        let line = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma";
+        let (c, r) = context_for(line, "PI", 0, false);
+        assert_eq!(&c[r.clone()], "pi");
+        assert!(c.starts_with('…'), "{c}");
+        // The second occurrence on a line.
+        let (c, r) = context_for("cat dog cat", "cat", 1, true);
+        assert_eq!(r.start, 8);
+        assert_eq!(&c[r], "cat");
+        // Not found: fall back to the query itself.
+        let (c, r) = context_for("nothing here", "zzz", 0, false);
+        assert_eq!((c.as_str(), r), ("zzz", 0..3));
+    }
+
+    #[test]
+    fn papers_like_paper_sizes() {
+        assert_eq!(paper_size(595.0, 842.0), "A4, Portrait (210 × 297 mm)");
+        assert_eq!(paper_size(792.0, 612.0), "US Letter, Landscape (279 × 216 mm)");
+        assert_eq!(paper_size(100.0, 100.0), "35 × 35 mm");
     }
 
     #[test]

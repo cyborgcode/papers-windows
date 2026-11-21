@@ -8,11 +8,11 @@
 
 use crate::settings::{Fit, Recent};
 use egui::{
-    Align2, Color32, CursorIcon, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
+    Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
 };
 use papers_render::{
-    ColorImage, Dest, DocInfo, Engine, LinkTarget, NightStyle, NormRect, PageExtras, Request, Rotation, SearchOptions,
-    TileKey, tiles_for,
+    ColorImage, Dest, DocInfo, Engine, Link, LinkTarget, NightStyle, NormRect, PageExtras, Request, Rotation, SearchMatch,
+    SearchOptions, TileKey, tiles_for,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 const GAP: f32 = 12.0;
 const MARGIN: f32 = 16.0;
 /// Width of the low-resolution page images used as placeholders and thumbnails, in points.
-pub const THUMB_W: f32 = 150.0;
+pub const THUMB_W: f32 = 200.0;
 const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 64.0;
 /// Points per PDF point at 100 %: a PDF point is 1/72 inch, an egui point 1/96 inch.
@@ -119,7 +119,9 @@ struct Layout {
     size: Vec2,
     /// Points per PDF point.
     k: f32,
-    key: (u32, Rotation, bool, u32),
+    /// Laid-out pages from top to bottom (all of them in continuous mode).
+    order: Vec<u32>,
+    key: (u32, Rotation, [bool; 4], u32, u32),
 }
 
 #[derive(Default)]
@@ -132,8 +134,8 @@ pub struct Search {
     generation: u64,
     sent: Option<(String, bool, bool)>,
     edited: Option<Instant>,
-    /// Matches by page; each match is one or more rectangles (unrotated, normalised).
-    pub results: BTreeMap<u32, Vec<Vec<NormRect>>>,
+    /// Matches by page.
+    pub results: BTreeMap<u32, Vec<SearchMatch>>,
     pub current: Option<(u32, usize)>,
     pub searched: u32,
     pub total_pages: u32,
@@ -146,14 +148,14 @@ impl Search {
         self.results.values().map(Vec::len).sum()
     }
 
-    /// 1-based position of the current match among all matches.
-    pub fn position(&self) -> Option<usize> {
-        let (page, i) = self.current?;
-        Some(self.results.range(..page).map(|(_, v)| v.len()).sum::<usize>() + i + 1)
-    }
 
     pub fn is_running(&self) -> bool {
         self.sent.is_some() && !self.done
+    }
+
+    /// The query was edited and the search has not started yet.
+    pub fn edited_pending(&self) -> bool {
+        self.edited.is_some()
     }
 }
 
@@ -179,6 +181,7 @@ enum Drag {
 /// Things the view asks the application to do.
 pub enum Action {
     OpenUrl(String),
+    Copy(String),
 }
 
 pub struct DocView {
@@ -187,6 +190,10 @@ pub struct DocView {
     pub fit: Fit,
     pub zoom: f32,
     pub dual: bool,
+    /// With dual pages: page 1 on the left (otherwise the first page stands alone, as in a book).
+    pub odd_left: bool,
+    pub rtl: bool,
+    pub continuous: bool,
     pub current_page: u32,
     pub search: Search,
     pub presenting: bool,
@@ -208,6 +215,8 @@ pub struct DocView {
     ppp: f32,
     hover_link: Option<String>,
     sidebar_thumbs: Vec<u32>,
+    context_link: Option<Link>,
+    flip_at: Option<Instant>,
 }
 
 impl DocView {
@@ -218,6 +227,9 @@ impl DocView {
             fit: Fit::Width,
             zoom: 1.0,
             dual: false,
+            odd_left: false,
+            rtl: false,
+            continuous: true,
             current_page: 0,
             search: Search::default(),
             presenting: false,
@@ -239,6 +251,8 @@ impl DocView {
             ppp: 1.0,
             hover_link: None,
             sidebar_thumbs: Vec::new(),
+            context_link: None,
+            flip_at: None,
         };
         if let Some(r) = restore {
             view.rotation = r.rotation();
@@ -310,7 +324,7 @@ impl DocView {
         }
     }
 
-    pub fn search_hits(&mut self, generation: u64, page: u32, matches: Vec<Vec<NormRect>>) {
+    pub fn search_hits(&mut self, generation: u64, page: u32, matches: Vec<SearchMatch>) {
         if generation != self.search.generation {
             return;
         }
@@ -339,6 +353,9 @@ impl DocView {
     // ----- navigation -----
 
     pub fn go_to(&mut self, dest: Dest) {
+        if !self.continuous {
+            self.current_page = dest.page.min(self.page_count().saturating_sub(1));
+        }
         self.pending_dest = Some(dest);
     }
 
@@ -349,13 +366,58 @@ impl DocView {
     }
 
     pub fn next_page(&mut self) {
-        let step = if self.dual && !self.presenting { 2 } else { 1 };
-        self.go_to_page((self.current_page + step).min(self.page_count().saturating_sub(1)));
+        let rows = self.rows();
+        let r = row_of(&rows, self.current_page as usize);
+        match rows.get(r + 1).and_then(|row| row.iter().flatten().min()) {
+            Some(&p) => self.go_to_page(p as u32),
+            None => self.go_to_page(self.current_page),
+        }
     }
 
     pub fn prev_page(&mut self) {
-        let step = if self.dual && !self.presenting { 2 } else { 1 };
-        self.go_to_page(self.current_page.saturating_sub(step));
+        let rows = self.rows();
+        let r = row_of(&rows, self.current_page as usize);
+        if r > 0
+            && let Some(&p) = rows[r - 1].iter().flatten().min()
+        {
+            self.go_to_page(p as u32);
+        } else {
+            self.go_to_page(0);
+        }
+    }
+
+    /// Pages in rows as laid out; `None` is the empty half of a spread.
+    fn rows(&self) -> Vec<Vec<Option<usize>>> {
+        let n = self.page_count() as usize;
+        if !self.dual || self.presenting {
+            return (0..n).map(|i| vec![Some(i)]).collect();
+        }
+        let mut rows = Vec::with_capacity(n / 2 + 1);
+        let mut i = 0;
+        if !self.odd_left && n > 0 {
+            rows.push(vec![None, Some(0)]);
+            i = 1;
+        }
+        while i < n {
+            rows.push(vec![Some(i), (i + 1 < n).then_some(i + 1)]);
+            i += 2;
+        }
+        if self.rtl {
+            for row in &mut rows {
+                row.reverse();
+            }
+        }
+        rows
+    }
+
+    pub fn set_layout_options(&mut self, continuous: bool, dual: bool, odd_left: bool, rtl: bool) {
+        if (continuous, dual, odd_left, rtl) != (self.continuous, self.dual, self.odd_left, self.rtl) {
+            self.continuous = continuous;
+            self.dual = dual;
+            self.odd_left = odd_left;
+            self.rtl = rtl;
+            self.pending_dest = Some(Dest { page: self.current_page, y: None });
+        }
     }
 
     pub fn scroll_by(&mut self, delta: Vec2) {
@@ -421,16 +483,6 @@ impl DocView {
         self.selection = None;
     }
 
-    pub fn set_dual(&mut self, dual: bool) {
-        if self.dual != dual {
-            self.dual = dual;
-            self.pending_dest = Some(Dest { page: self.current_page, y: None });
-        }
-    }
-
-    pub fn zoom_label(&self) -> String {
-        format!("{:.0}%", self.zoom * 100.0)
-    }
 
     /// Keep the point under `anchor` (screen position; default: the top centre of the view)
     /// in place across the next layout change.
@@ -442,26 +494,33 @@ impl DocView {
         let content = screen - self.viewport.min + self.scroll;
         let page = self.page_at_y(content.y);
         let r = self.layout.rects[page as usize];
+        if !r.is_positive() {
+            return;
+        }
         let u = (content.x - r.left()) / r.width();
         let v = (content.y - r.top()) / r.height();
         self.pending_anchor = Some((page, u, v, screen));
     }
 
     fn page_at_y(&self, y: f32) -> u32 {
+        let order = &self.layout.order;
         let rects = &self.layout.rects;
-        let i = rects.partition_point(|r| r.bottom() + GAP / 2.0 < y);
-        i.min(rects.len().saturating_sub(1)) as u32
+        let i = order.partition_point(|&p| rects[p as usize].bottom() + GAP / 2.0 < y);
+        order.get(i.min(order.len().saturating_sub(1))).copied().unwrap_or(0)
     }
 
     fn fit_k(&self, viewport: Vec2) -> f32 {
         let avail_w = (viewport.x - 2.0 * MARGIN - 14.0).max(50.0);
         let avail_h = (viewport.y - 2.0 * MARGIN).max(50.0);
-        let n = self.page_count() as usize;
-        let widest = if self.dual && !self.presenting {
-            (0..n).step_by(2).map(|i| self.page_pts(i).x + if i + 1 < n { self.page_pts(i + 1).x } else { 0.0 }).fold(1.0, f32::max)
-        } else {
-            (0..n).map(|i| self.page_pts(i).x).fold(1.0, f32::max)
-        };
+        let widest = self
+            .rows()
+            .iter()
+            .map(|row| {
+                let known: Vec<f32> = row.iter().flatten().map(|&i| self.page_pts(i).x).collect();
+                let other = known.first().copied().unwrap_or(0.0);
+                known.iter().sum::<f32>() + other * (row.len() - known.len()) as f32
+            })
+            .fold(1.0, f32::max);
         let gap = if self.dual { GAP } else { 0.0 };
         let kw = (avail_w - gap) / widest;
         match self.fit {
@@ -479,31 +538,54 @@ impl DocView {
         if self.fit != Fit::None {
             self.zoom = k / PT;
         }
-        let key = (k.to_bits(), self.rotation, self.dual, viewport.x.to_bits());
+        let all_rows = self.rows();
+        let current_row = row_of(&all_rows, self.current_page as usize);
+        let flags = [self.dual && !self.presenting, self.odd_left, self.rtl, self.continuous];
+        let row_key = if self.continuous { u32::MAX } else { current_row as u32 };
+        let key = (k.to_bits(), self.rotation, flags, row_key, viewport.x.to_bits());
         if key == self.layout.key && !self.layout.rects.is_empty() {
             return;
         }
         let n = self.page_count() as usize;
         let sizes: Vec<Vec2> = (0..n).map(|i| self.page_pts(i) * k).collect();
-        let mut rects = Vec::with_capacity(n);
-        let rows: Vec<Vec<usize>> =
-            if self.dual { (0..n).step_by(2).map(|i| (i..(i + 2).min(n)).collect()).collect() } else { (0..n).map(|i| vec![i]).collect() };
-        let row_w = |row: &Vec<usize>| row.iter().map(|&i| sizes[i].x).sum::<f32>() + GAP * (row.len() as f32 - 1.0);
-        let content_w = rows.iter().map(row_w).fold(0.0, f32::max) + 2.0 * MARGIN;
+        let rows: Vec<&Vec<Option<usize>>> =
+            if self.continuous { all_rows.iter().collect() } else { all_rows.get(current_row).into_iter().collect() };
+        // An empty half of a spread takes the size of the page beside it.
+        let slot = |row: &Vec<Option<usize>>, s: Option<usize>| -> Vec2 {
+            s.map(|i| sizes[i]).unwrap_or_else(|| row.iter().flatten().next().map(|&i| sizes[i]).unwrap_or(Vec2::ZERO))
+        };
+        let row_w = |row: &Vec<Option<usize>>| row.iter().map(|s| slot(row, *s).x).sum::<f32>() + GAP * (row.len() as f32 - 1.0);
+        let content_w = rows.iter().map(|r| row_w(r)).fold(0.0, f32::max) + 2.0 * MARGIN;
         let width = content_w.max(viewport.x);
+        let mut rects = vec![Rect::NOTHING; n];
+        let mut order = Vec::with_capacity(n);
         let mut y = MARGIN;
-        rects.resize(n, Rect::NOTHING);
-        for row in &rows {
+        for row in rows {
             let w = row_w(row);
-            let h = row.iter().map(|&i| sizes[i].y).fold(0.0, f32::max);
+            let h = row.iter().map(|s| slot(row, *s).y).fold(0.0, f32::max);
             let mut x = ((width - w) / 2.0).max(MARGIN);
-            for &i in row {
-                rects[i] = Rect::from_min_size(pos2(x, y + (h - sizes[i].y) / 2.0), sizes[i]);
-                x += sizes[i].x + GAP;
+            for s in row {
+                let size = slot(row, *s);
+                if let Some(i) = *s {
+                    rects[i] = Rect::from_min_size(pos2(x, y + (h - size.y) / 2.0), size);
+                    order.push(i as u32);
+                }
+                x += size.x + GAP;
             }
             y += h + GAP;
         }
-        self.layout = Layout { rects, size: vec2(width, y - GAP + MARGIN), k, key };
+        if !self.continuous {
+            // Fill the window so short pages still centre vertically.
+            let used = y - GAP + MARGIN;
+            if used < viewport.y {
+                let shift = (viewport.y - used) / 2.0;
+                for &p in &order {
+                    rects[p as usize] = rects[p as usize].translate(vec2(0.0, shift));
+                }
+                y += viewport.y - used;
+            }
+        }
+        self.layout = Layout { rects, size: vec2(width, y - GAP + MARGIN), k, order, key };
     }
 
     /// Resolve pending navigation now that the layout is known.
@@ -515,7 +597,7 @@ impl DocView {
             self.pending_scroll = Some(self.clamp_scroll(content.to_vec2() - (screen - self.viewport.min)));
         }
         if let Some(dest) = self.pending_dest.take()
-            && let Some(r) = self.layout.rects.get(dest.page as usize)
+            && let Some(r) = self.layout.rects.get(dest.page as usize).filter(|r| r.is_positive())
         {
             let y = r.top() + dest.y.map_or(0.0, |v| v * r.height()) - MARGIN;
             let x = if self.layout.size.x > self.viewport.width() {
@@ -596,6 +678,12 @@ impl DocView {
         self.scroll_to_match();
     }
 
+    /// Jump to a match chosen in the results list.
+    pub fn select_match(&mut self, page: u32, index: usize) {
+        self.search.current = Some((page, index));
+        self.scroll_to_match();
+    }
+
     pub fn close_search(&mut self, engine: &Engine) {
         self.search.open = false;
         self.search.query.clear();
@@ -607,9 +695,13 @@ impl DocView {
 
     fn scroll_to_match(&mut self) {
         let Some((page, i)) = self.search.current else { return };
-        let Some(rects) = self.search.results.get(&page).and_then(|m| m.get(i)) else { return };
-        let r = self.rotation.map_rect(rects[0]);
-        if self.layout.rects.is_empty() {
+        let Some(m) = self.search.results.get(&page).and_then(|m| m.get(i)) else { return };
+        let Some(&first) = m.rects.first() else { return };
+        let r = self.rotation.map_rect(first);
+        if !self.continuous && row_of(&self.rows(), page as usize) != row_of(&self.rows(), self.current_page as usize) {
+            self.current_page = page;
+        }
+        if self.layout.rects.is_empty() || !self.layout.rects[page as usize].is_positive() {
             self.pending_dest = Some(Dest { page, y: Some(r[1]) });
             return;
         }
@@ -777,9 +869,12 @@ impl DocView {
             let (_, response) = ui.allocate_exact_size(self.layout.size, Sense::click_and_drag());
             self.interact(ui, &response, origin, viewport, engine, &mut actions);
             let painter = ui.painter().clone();
-            let first = self.page_at_y(viewport.top()) as usize;
+            let rects = &self.layout.rects;
+            let start = self.layout.order.partition_point(|&p| rects[p as usize].bottom() + GAP / 2.0 < viewport.top());
+            let pages: Vec<u32> = self.layout.order[start.saturating_sub(2)..].to_vec();
             let mut visible = Vec::new();
-            for i in first.saturating_sub(1)..self.layout.rects.len() {
+            for page in pages {
+                let i = page as usize;
                 let r = self.layout.rects[i];
                 if r.top() > viewport.bottom() {
                     break;
@@ -798,7 +893,9 @@ impl DocView {
         self.scroll = output.state.clamped_offset();
         let visible = output.inner;
         let viewport = Rect::from_min_size(self.scroll.to_pos2(), self.viewport.size());
-        if let Some(&first) = visible.first() {
+        if !self.continuous {
+            self.flip_at_edges(ui, viewport);
+        } else if let Some(&first) = visible.first() {
             let probe = viewport.top() + viewport.height() * 0.3;
             let page = visible.iter().copied().find(|&p| self.layout.rects[p as usize].bottom() + GAP >= probe).unwrap_or(first);
             if self.pending_dest.is_none() {
@@ -813,6 +910,36 @@ impl DocView {
         actions
     }
 
+
+    /// Without continuous scrolling, scrolling past the top or bottom turns the page.
+    fn flip_at_edges(&mut self, ui: &Ui, viewport: Rect) {
+        let delta = crate::adw::wheel_steps(ui);
+        if delta == 0.0 || !ui.rect_contains_pointer(self.viewport) {
+            return;
+        }
+        if self.flip_at.is_some_and(|t| t.elapsed() < Duration::from_millis(350)) {
+            return;
+        }
+        let max_y = (self.layout.size.y - viewport.height()).max(0.0);
+        if delta < 0.0 && self.scroll.y >= max_y - 1.0 {
+            let before = self.current_page;
+            self.next_page();
+            if self.current_page != before {
+                self.flip_at = Some(Instant::now());
+            }
+        } else if delta > 0.0 && self.scroll.y <= 1.0 && self.current_page > 0 {
+            let rows = self.rows();
+            let r = row_of(&rows, self.current_page as usize);
+            if r > 0
+                && let Some(&p) = rows[r - 1].iter().flatten().min()
+            {
+                // Arrive at the bottom of the previous page.
+                self.current_page = p as u32;
+                self.pending_dest = Some(Dest { page: p as u32, y: Some(1.0) });
+                self.flip_at = Some(Instant::now());
+            }
+        }
+    }
 
     fn page_at_screen(&self, pos: Pos2, origin: Pos2) -> Option<(u32, [f32; 2])> {
         let content = pos - origin.to_vec2();
@@ -910,6 +1037,9 @@ impl DocView {
                 log::debug!("selected {} characters", text.chars().count());
             }
         }
+        if response.secondary_clicked() {
+            self.context_link = link_here.clone();
+        }
         if response.double_clicked()
             && let Some((page, pt)) = inside
             && let Some(i) = self.char_at(page, pt, false)
@@ -924,12 +1054,55 @@ impl DocView {
             }
             self.selection = None;
         }
-        let _ = Key::Escape;
+        self.context_menu(response, actions);
+    }
+
+    /// Right-click menu, as in Papers: link actions, Copy and Select All.
+    fn context_menu(&mut self, response: &egui::Response, actions: &mut Vec<Action>) {
+        let link = self.context_link.clone();
+        let selected = self.selected_text();
+        let mut go = None;
+        let mut select_all = false;
+        response.context_menu(|ui| {
+            ui.set_min_width(220.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            if let Some(l) = &link {
+                match &l.target {
+                    LinkTarget::Uri(u) => {
+                        if crate::adw::menu_item(ui, "Open Link", "", None, true) {
+                            actions.push(Action::OpenUrl(u.clone()));
+                        }
+                        if crate::adw::menu_item(ui, "Copy Link Address", "", None, true) {
+                            actions.push(Action::Copy(u.clone()));
+                        }
+                    }
+                    LinkTarget::Dest(d) => {
+                        if crate::adw::menu_item(ui, "Go To", "", None, true) {
+                            go = Some(*d);
+                        }
+                    }
+                }
+                crate::adw::menu_separator(ui);
+            }
+            if crate::adw::menu_item(ui, "Copy", "Ctrl+C", None, selected.is_some())
+                && let Some(text) = &selected
+            {
+                actions.push(Action::Copy(text.clone()));
+            }
+            if crate::adw::menu_item(ui, "Select All", "Ctrl+A", None, true) {
+                select_all = true;
+            }
+        });
+        if let Some(d) = go {
+            self.go_to(d);
+        }
+        if select_all {
+            self.select_all_on_page();
+        }
     }
 
     fn draw_page(&mut self, painter: &egui::Painter, page: u32, screen: Rect, paper: Color32, night: Option<NightStyle>) {
-        let shadow = Color32::from_black_alpha(if night.is_some() { 120 } else { 50 });
-        painter.rect_filled(screen.translate(vec2(0.0, 1.5)).expand(1.0), 2.0, shadow);
+        crate::adw::page_shadow(painter, screen, painter.ctx().global_style().visuals.dark_mode);
         painter.rect_filled(screen, 0.0, paper);
         let frame = self.textures.frame;
         let render_w = self.pixel_size(page, self.render_k)[0];
@@ -974,7 +1147,7 @@ impl DocView {
             };
             for (i, m) in matches.iter().enumerate() {
                 let is_current = self.search.current == Some((page, i));
-                for r in m {
+                for r in &m.rects {
                     let r = to_screen(*r).expand(1.0);
                     painter.rect_filled(r, 2.0, if is_current { current } else { all });
                     if is_current {
@@ -1205,6 +1378,11 @@ impl DocView {
 
 const ZOOM_STEPS: [f32; 17] =
     [0.1, 0.25, 0.333, 0.5, 0.667, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 3.0, 4.0, 8.0, 16.0];
+
+/// The row that holds `page`.
+fn row_of(rows: &[Vec<Option<usize>>], page: usize) -> usize {
+    rows.iter().position(|r| r.contains(&Some(page))).unwrap_or(0)
+}
 
 /// Align a rectangle's corner to the physical pixel grid so tiles land on whole pixels.
 fn snap(r: Rect, ppp: f32) -> Rect {

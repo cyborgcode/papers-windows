@@ -219,9 +219,25 @@ pub struct DocInfo {
     /// Page sizes in PDF points, as displayed (the page's own /Rotate applied).
     pub page_sizes: Vec<[f32; 2]>,
     pub outline: Vec<OutlineItem>,
-    /// Document properties as (label, value) pairs, ready to display.
-    pub properties: Vec<(String, String)>,
+    /// Document properties in titled groups of (label, value) rows, ready to display.
+    pub properties: Vec<PropertyGroup>,
     pub title: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PropertyGroup {
+    pub title: String,
+    pub rows: Vec<(String, String)>,
+}
+
+/// One search match: where it is, and the line of text around it for the results list.
+#[derive(Clone, Debug)]
+pub struct SearchMatch {
+    /// One rectangle per line the match spans (unrotated, normalised).
+    pub rects: Vec<NormRect>,
+    /// The surrounding text, and the byte range of the match within it.
+    pub context: String,
+    pub range: std::ops::Range<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -250,8 +266,8 @@ pub enum Event {
     Tile { doc: DocId, key: TileKey, night: Option<NightStyle>, image: Arc<ColorImage> },
     TileFailed { doc: DocId, key: TileKey, error: String },
     Extras { doc: DocId, page: u32, extras: PageExtras },
-    /// Every match on the page; a match that spans lines has several rectangles.
-    SearchHits { doc: DocId, generation: u64, page: u32, matches: Vec<Vec<NormRect>> },
+    /// Every match on the page.
+    SearchHits { doc: DocId, generation: u64, page: u32, matches: Vec<SearchMatch> },
     SearchProgress { doc: DocId, generation: u64, searched: u32, total: u32 },
     SearchDone { doc: DocId, generation: u64 },
     /// `Ok(false)` when the print dialog was cancelled.

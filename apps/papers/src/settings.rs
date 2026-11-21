@@ -35,6 +35,9 @@ pub struct Settings {
     pub sidebar: bool,
     pub sidebar_tab: u8,
     pub dual: bool,
+    pub odd_left: bool,
+    pub rtl: bool,
+    pub continuous: bool,
     pub check_updates: bool,
     /// Unix seconds of the last automatic update check.
     pub last_update_check: u64,
@@ -51,6 +54,9 @@ impl Default for Settings {
             sidebar: false,
             sidebar_tab: 0,
             dual: false,
+            odd_left: false,
+            rtl: false,
+            continuous: true,
             check_updates: true,
             last_update_check: 0,
             skipped_version: String::new(),
@@ -81,7 +87,7 @@ impl Recent {
     }
 
     pub fn display_name(&self) -> String {
-        self.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| file_name(&self.path))
+        file_name(&self.path)
     }
 }
 

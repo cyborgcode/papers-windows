@@ -55,8 +55,10 @@ fn main() {
     });
     let info = info.unwrap();
     println!("open: {:?}, {} pages, outline items: {}", t.elapsed(), info.page_sizes.len(), info.outline.len());
-    for (k, v) in &info.properties {
-        println!("  {k}: {v}");
+    for group in &info.properties {
+        for (k, v) in &group.rows {
+            println!("  {}: {k}: {v}", group.title);
+        }
     }
     let [pw, ph] = info.page_sizes[page as usize];
     let height = (width as f32 * ph / pw).round() as u32;

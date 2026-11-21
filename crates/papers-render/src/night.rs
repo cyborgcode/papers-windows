@@ -18,10 +18,10 @@ use rayon::prelude::*;
 /// How pages are recoloured in night mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum NightStyle {
-    /// Invert lightness, keep hues, soften the contrast slightly.
+    /// Invert lightness and keep hues, like GNOME Papers.
     #[default]
     Smart,
-    /// Plain colour inversion (like the GNOME version's night mode).
+    /// Plain colour inversion.
     Invert,
 }
 
@@ -30,8 +30,8 @@ impl NightStyle {
 
     pub fn label(self) -> &'static str {
         match self {
-            NightStyle::Smart => "Smart (keeps colours)",
-            NightStyle::Invert => "Inverted",
+            NightStyle::Smart => "Keep colours",
+            NightStyle::Invert => "Invert colours",
         }
     }
 
@@ -68,8 +68,8 @@ pub struct Filter {
 impl Filter {
     pub fn new(style: NightStyle) -> Self {
         let (matrix, lo, hi) = match style {
-            // White paper → #1f1f1f-ish, black ink → #e0e0e0-ish.
-            NightStyle::Smart => (HUE_ROTATE_180, 31.0_f32, 224.0_f32),
+            // Exactly Papers' own `invert(1) hue-rotate(180deg)`: white paper → black.
+            NightStyle::Smart => (HUE_ROTATE_180, 0.0_f32, 255.0_f32),
             NightStyle::Invert => (IDENTITY, 0.0, 255.0),
         };
         let mut range = [0u8; 256];
@@ -136,12 +136,12 @@ mod tests {
     }
 
     #[test]
-    fn smart_greys_invert_and_soften() {
+    fn smart_greys_invert_like_papers() {
         let f = Filter::new(NightStyle::Smart);
         let mut px = vec![Color32::WHITE, Color32::BLACK, Color32::from_gray(128)];
         f.apply(&mut px);
-        assert_eq!(px[0], Color32::from_gray(31));
-        assert_eq!(px[1], Color32::from_gray(224));
+        assert_eq!(px[0], Color32::BLACK);
+        assert_eq!(px[1], Color32::WHITE);
         assert!(px[0].r() == px[0].g() && px[0].g() == px[0].b());
         // The matrix path agrees with the grey fast path.
         let slow = {

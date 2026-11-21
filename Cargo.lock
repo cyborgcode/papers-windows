@@ -2664,7 +2664,7 @@ dependencies = [
 
 [[package]]
 name = "papers"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "eframe",
  "egui",
@@ -2682,7 +2682,7 @@ dependencies = [
 
 [[package]]
 name = "papers-render"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "egui",
  "log",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "papers-update"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "hex",
  "libc",
@@ -2709,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "papers-updater"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "papers-update",
  "windows-sys 0.61.2",

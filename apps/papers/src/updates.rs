@@ -191,135 +191,143 @@ impl Updates {
     }
 }
 
-/// The banner shown above the document. Returns the version to skip, if chosen.
+/// The Adwaita banner shown under the header bar. Returns the version to skip, if chosen.
 pub fn banner(ui: &mut egui::Ui, updates: &mut Updates) -> Option<String> {
+    use crate::adw;
     let mut skip = None;
     if let Some(outcome) = updates.outcome.clone() {
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).fill(ui.visuals().faint_bg_color).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if outcome.ok {
-                    ui.label(format!("✔ Papers was updated to {}.", outcome.version));
-                } else {
-                    ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ The update to {} failed: {}", outcome.version, outcome.message));
-                }
-                if ui.small_button("✖").on_hover_text("Dismiss").clicked() {
-                    updates.outcome = None;
-                }
-            });
-        });
+        let text = if outcome.ok {
+            format!("Papers was updated to {}", outcome.version)
+        } else {
+            format!("The update to {} failed: {}", outcome.version, outcome.message)
+        };
+        if adw::banner(ui, &text, Some("Dismiss")) {
+            updates.outcome = None;
+        }
     }
     if updates.banner_dismissed {
         return None;
     }
     let ctx = ui.ctx().clone();
-    let mut start = false;
-    let mut cancel = false;
     match &updates.state {
         State::Available(m) => {
             let version = m.version.clone();
-            let notes = m.notes_url.clone();
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).fill(ui.visuals().faint_bg_color).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(format!("⬆ Papers {version} is available (you have {VERSION})."));
-                    let label = match InstallKind::current() {
-                        InstallKind::Unmanaged => "Download…",
-                        _ => "Update and restart",
-                    };
-                    if ui.button(label).clicked() {
-                        start = true;
-                    }
-                    if !notes.is_empty() && ui.link("What's new").clicked() {
-                        ctx.open_url(egui::OpenUrl::new_tab(&notes));
-                    }
-                    if ui.small_button("Skip this version").clicked() {
+            let label = match InstallKind::current() {
+                InstallKind::Unmanaged => "Download…",
+                _ => "Update and Restart",
+            };
+            let p = adw::Palette::of(ui);
+            let fill = adw::blend(p.headerbar_bg, p.accent_bg, if p.dark { 0.25 } else { 0.15 });
+            let mut start = false;
+            egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_centered(|ui| {
+                    ui.set_min_height(34.0);
+                    ui.label(format!("Papers {version} is available"));
+                    start = adw::text_button(ui, label, true, true).clicked();
+                    if adw::text_button(ui, "Skip This Version", false, true).clicked() {
                         skip = Some(version.clone());
                         updates.banner_dismissed = true;
                     }
-                    if ui.small_button("✖").on_hover_text("Remind me later").clicked() {
+                    if adw::icon_button_sized(ui, adw::Icon::WindowClose, "Remind Me Later", false, egui::vec2(34.0, 34.0), true).clicked() {
                         updates.banner_dismissed = true;
                     }
                 });
             });
+            if start {
+                updates.download(&ctx);
+            }
         }
         State::Downloading { manifest, done, total, .. } => {
             let fraction = done.load(Ordering::Relaxed) as f32 / (*total).max(1) as f32;
             let version = manifest.version.clone();
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 6)).fill(ui.visuals().faint_bg_color).show(ui, |ui| {
-                ui.horizontal(|ui| {
+            let p = adw::Palette::of(ui);
+            let fill = adw::blend(p.headerbar_bg, p.accent_bg, if p.dark { 0.25 } else { 0.15 });
+            let mut cancel = false;
+            egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_centered(|ui| {
+                    ui.set_min_height(34.0);
                     ui.label(format!("Downloading Papers {version}…"));
-                    ui.add(egui::ProgressBar::new(fraction).desired_width(220.0).show_percentage());
-                    if ui.small_button("Cancel").clicked() {
-                        cancel = true;
-                    }
+                    ui.add(egui::ProgressBar::new(fraction).desired_width(200.0).desired_height(6.0).fill(p.accent_bg));
+                    cancel = adw::text_button(ui, "Cancel", false, true).clicked();
                 });
             });
+            if cancel {
+                updates.cancel();
+            }
         }
         _ => {}
-    }
-    if start {
-        updates.download(&ctx);
-    }
-    if cancel {
-        updates.cancel();
     }
     skip
 }
 
-/// The window for a manual check.
+/// The "Software Updates" dialog for a manual check.
 pub fn window(ctx: &egui::Context, updates: &mut Updates, auto_check: &mut bool) {
+    use crate::adw;
     if !updates.window {
         return;
     }
-    let mut open = true;
+    let dark = ctx.global_style().visuals.dark_mode;
+    let mut close = false;
     let mut start = false;
-    egui::Window::new("Updates").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-        ui.label(format!("Installed version: {VERSION} ({})", InstallKind::current().id()));
-        ui.add_space(6.0);
-        match &updates.state {
-            State::Idle => {
-                ui.label("Not checked yet.");
-            }
-            State::Checking { .. } => {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Checking for updates…");
+    let mut check = false;
+    let response = egui::Modal::new(egui::Id::unique("updates-dialog")).frame(adw::dialog_frame(dark)).show(ctx, |ui| {
+        let p = adw::Palette::of(ui);
+        ui.set_width(380.0);
+        close = adw::dialog_header(ui, "Software Updates");
+        egui::Frame::new().inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 18 }).show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                let (title, detail): (String, String) = match &updates.state {
+                    State::Idle => ("Not Checked Yet".into(), String::new()),
+                    State::Checking { .. } => ("Checking for Updates…".into(), String::new()),
+                    State::UpToDate => ("Papers Is Up to Date".into(), format!("Version {VERSION} is the latest.")),
+                    State::Available(m) => (format!("Papers {} Is Available", m.version), m.notes.clone()),
+                    State::Downloading { manifest, .. } => (format!("Downloading Papers {}…", manifest.version), String::new()),
+                    State::Failed(e) => ("Could Not Check for Updates".into(), e.clone()),
+                };
+                ui.add_space(6.0);
+                if matches!(updates.state, State::Checking { .. } | State::Downloading { .. }) {
+                    ui.add(egui::Spinner::new().size(32.0));
+                    ui.add_space(8.0);
+                }
+                ui.label(egui::RichText::new(title).font(adw::bold(20.0)));
+                if !detail.is_empty() {
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(egui::RichText::new(detail).color(p.dim())).wrap());
+                }
+                if let State::Downloading { done, total, .. } = &updates.state {
+                    let f = done.load(Ordering::Relaxed) as f32 / (*total).max(1) as f32;
+                    ui.add(egui::ProgressBar::new(f).desired_height(6.0).fill(p.accent_bg));
+                }
+                ui.add_space(14.0);
+                if matches!(updates.state, State::Available(_)) {
+                    start = adw::pill_button(ui, "Update and Restart", true).clicked();
+                    ui.add_space(10.0);
+                }
+            });
+            adw::boxed_list(ui, |list| {
+                list.row("Check Automatically", |ui| {
+                    ui.checkbox(auto_check, "");
                 });
-            }
-            State::UpToDate => {
-                ui.label("✔ Papers is up to date.");
-            }
-            State::Available(m) => {
-                ui.label(format!("Papers {} is available.", m.version));
-                if !m.notes.is_empty() {
-                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| ui.label(&m.notes));
+                list.row(&format!("Installed Version {VERSION} ({})", InstallKind::current().id()), |ui| {
+                    if adw::text_button(ui, "Check Now", false, !updates.is_busy()).clicked() {
+                        check = true;
+                    }
+                });
+                if list.action("All Releases", "").clicked() {
+                    list.ui.ctx().open_url(egui::OpenUrl::new_tab(papers_update::RELEASES_URL));
                 }
-                if ui.button("Update and restart").clicked() {
-                    start = true;
-                }
-            }
-            State::Downloading { done, total, .. } => {
-                let f = done.load(Ordering::Relaxed) as f32 / (*total).max(1) as f32;
-                ui.add(egui::ProgressBar::new(f).show_percentage());
-            }
-            State::Failed(e) => {
-                ui.colored_label(ui.visuals().warn_fg_color, e);
-            }
-        }
-        ui.add_space(6.0);
-        ui.checkbox(auto_check, "Check for updates automatically");
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!updates.is_busy(), egui::Button::new("Check now")).clicked() {
-                updates.check(ui.ctx(), true);
-            }
-            if ui.link("All releases").clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(papers_update::RELEASES_URL));
-            }
+            });
         });
     });
+    if check {
+        updates.check(ctx, true);
+    }
     if start {
         updates.download(ctx);
     }
-    if !open {
+    if close || response.should_close() {
         updates.window = false;
     }
 }
